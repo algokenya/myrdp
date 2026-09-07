@@ -1,3 +1,5 @@
+name: RDP
+
 on:
   workflow_dispatch:
 
@@ -11,15 +13,12 @@ jobs:
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
                              -Name "fDenyTSConnections" -Value 0 -Force
-
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "UserAuthentication" -Value 0 -Force
-
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "SecurityLayer" -Value 0 -Force
 
           netsh advfirewall firewall delete rule name="RDP-Tailscale"
-
           netsh advfirewall firewall add rule name="RDP-Tailscale" `
             dir=in action=allow protocol=TCP localport=3389
 
@@ -35,20 +34,23 @@ jobs:
               Special = ([char[]](33..47) + [char[]](58..64) +
                          [char[]](91..96) + [char[]](123..126))
           }
+
           $rawPassword = @()
           $rawPassword += $charSet.Upper | Get-Random -Count 4
           $rawPassword += $charSet.Lower | Get-Random -Count 4
           $rawPassword += $charSet.Number | Get-Random -Count 4
           $rawPassword += $charSet.Special | Get-Random -Count 4
+
           $password = -join ($rawPassword | Sort-Object { Get-Random })
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
 
-          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
+          New-LocalUser -Name "maxxciey" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "maxxciey"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "maxxciey"
 
-          if (-not (Get-LocalUser -Name "RDP")) {
+          echo "RDP_CREDS=User: maxxciey | Password: $password" >> $env:GITHUB_ENV
+
+          if (-not (Get-LocalUser -Name "maxxciey")) {
               Write-Error "User creation failed"
               exit 1
           }
@@ -64,14 +66,14 @@ jobs:
 
       - name: Establish Tailscale Connection
         run: |
-          # This will print a login URL — open it in your browser to authenticate
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --hostname=gh-runner-persistent
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
 
           $tsIP = $null
           $retries = 0
-          while (-not $tsIP -and $retries -lt 30) {
+
+          while (-not $tsIP -and $retries -lt 10) {
               $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 10
+              Start-Sleep -Seconds 5
               $retries++
           }
 
@@ -79,6 +81,7 @@ jobs:
               Write-Error "Tailscale IP not assigned. Exiting."
               exit 1
           }
+
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
       - name: Verify RDP Accessibility
@@ -86,17 +89,78 @@ jobs:
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
 
           $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+
           if (-not $testResult.TcpTestSucceeded) {
               Write-Error "TCP connection to RDP port 3389 failed"
               exit 1
           }
+
           Write-Host "TCP connectivity successful!"
+
+      - name: Install MetaTrader5 (Deriv) and VS Code
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # --- MT5 ---
+          $mt5Url = "https://download.mql5.com/cdn/web/deriv.com.limited/mt5/deriv5setup.exe"
+          $mt5Path = "$env:TEMP\deriv5setup.exe"
+
+          Invoke-WebRequest -Uri $mt5Url -OutFile $mt5Path
+          Start-Process -FilePath $mt5Path -ArgumentList "/auto" -Wait
+          Remove-Item $mt5Path -Force
+
+          # --- VS Code ---
+          $vscodeUrl = "https://vscode.download.prss.microsoft.com/dbazure/download/stable/df53daabb18cd157bdb08c7f01c34df936cf12f4/VSCodeSetup-x64-1.132.0.exe"
+          $vscodePath = "$env:TEMP\vscodesetup.exe"
+
+          Invoke-WebRequest -Uri $vscodeUrl -OutFile $vscodePath
+          Start-Process -FilePath $vscodePath -ArgumentList "/VERYSILENT", "/NORESTART", "/ALLUSERS=1", "/MERGETASKS=!runcode,addcontextmenufiles,addcontextmenufolders,addtopath" -Wait
+          Remove-Item $vscodePath -Force
+
+          if (-not (Test-Path "C:\Program Files\Microsoft VS Code\Code.exe")) {
+              Write-Error "VS Code install failed — binary not found"
+              exit 1
+          }
+
+          Write-Host "MT5 and VS Code installation confirmed."
+
+      - name: Clone Private Repo into maxxciey's Downloads folder
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $repoUrl = "https://github.com/Techtoxic/Oopus4.8-advanced-deriv-trading-algos-2026.git"
+
+          $downloadsDir = "C:\Users\maxxciey\Downloads"
+          New-Item -ItemType Directory -Force -Path $downloadsDir | Out-Null
+
+          $cloneDir = "$downloadsDir\Oopus4.8-advanced-deriv-trading-algos-2026"
+
+          # Remove accidental whitespace/newlines from the secret
+          $token = "${{ secrets.GTOKEN }}".Trim()
+
+          # Create Basic authentication header
+          $auth = [Convert]::ToBase64String(
+              [Text.Encoding]::ASCII.GetBytes("x-access-token:$token")
+          )
+
+          git -c "http.extraheader=AUTHORIZATION: basic $auth" `
+              clone --branch fable-thoughts --single-branch `
+              $repoUrl $cloneDir
+
+          if (-not (Test-Path "$cloneDir\.git")) {
+              Write-Error "Clone failed — check GTOKEN permissions and that fable-thoughts exists"
+              exit 1
+          }
+
+          Write-Host "Repo cloned successfully."
+          Write-Host "Branch: fable-thoughts"
+          Write-Host "Location: $cloneDir"
 
       - name: Maintain Connection
         run: |
           Write-Host "`n=== RDP ACCESS ==="
           Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
+          Write-Host "Username: maxxciey"
           Write-Host "Password: $(echo $env:RDP_CREDS)"
           Write-Host "==================`n"
 
